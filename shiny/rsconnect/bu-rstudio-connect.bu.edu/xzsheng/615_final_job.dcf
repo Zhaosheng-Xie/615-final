@@ -1,0 +1,12 @@
+name: 615_final_job
+title: 615 Final job
+username: xzsheng
+account: xzsheng
+server: bu-rstudio-connect.bu.edu
+hostUrl: https://bu-rstudio-connect.bu.edu/__api__
+appId: 32
+bundleId: 89
+url: https://bu-rstudio-connect.bu.edu/content/32/
+when: 1607964889.60569
+asMultiple: FALSE
+asStatic: FALSE
