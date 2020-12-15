@@ -1,0 +1,234 @@
+---
+title: "615 Final"
+author: "Zhaosheng-Xie"
+date: "2020/12/11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(httr)
+library(jsonlite)
+library(magrittr)
+library(tidyverse)
+library(wordcloud)
+library(tm)
+library(stringr)
+library(funModeling)
+library(readxl)
+library(jiebaR)
+library(jiebaRD)
+library(tmap)
+library(tmaptools)
+library(sf)
+library(RColorBrewer)
+library(wordcloud2)
+library(zoo)
+library(plyr)
+```
+# Introduction
+  This is 615 final project. I use data from adzuna to find out which is the main category of job that data scientists do. Why is this question? Because when finishing master degree, I will find a job as a data scientist in different field. Personally speaking, I look forward to entering a big IT company. 
+
+
+# Get data from Adzuna
+
+This is a data sample. This dataset contains several columns and 3 small datasets.  
+Here is the api link: https://developer.adzuna.com/activedocs#!/adzuna/search  
+When you have appid and app_key, you can set some parameters and click "try it out". Data is in Response body.
+
+```{r}
+# Some apis of adzuna
+# appid = 8eb483ae
+# app_key = 003603843368e6c4eaee2a744120d7e8
+
+# appid = f0c87e31
+# app_key = 84f049d50dd8aa26e2e48aff8ba0e61f
+
+# adzuna data sample
+data <- fromJSON("https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=8eb483ae&app_key=003603843368e6c4eaee2a744120d7e8&results_per_page=50&what_phrase=data&what_or=data%20scientce%20statistician&title_only=data%20scientist")
+adzuna_sample <- data$results
+adzuna_sample <-  adzuna_sample %>% 
+  select("id","title","description","latitude","longitude","created","salary_is_predicted") %>%    mutate("company_name"=data$results$company$display_name) %>%  # choose some columns
+    mutate("category_label"=data$results$category$label) %>% 
+mutate("location"=data$results$location$display_name)
+# write.table(adzuna_sample,"D:/MSSP/Rdata/615/615 final/adzuna_sample.csv",col.names = TRUE,row.name = FALSE,sep = ",")
+
+```
+
+
+
+Because this site only allows us to get 1 page of data at a time (50 observations), I write a loop to obtain 10 pages data.
+```{r}
+# https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=f0c87e31&app_key=84f049d50dd8aa26e2e48aff8ba0e61f&results_per_page=50&what_phrase=data&what_or=data%20scientce%20statistician
+
+# use loop to get 10 pages data
+
+us <- list(NULL)  # choose data of USA
+length(us) <- 10   # set page number
+for (i in 1:length(us)) {
+  url <- paste("https://api.adzuna.com/v1/api/jobs/us/search/",i,"?app_id=f0c87e31&app_key=84f049d50dd8aa26e2e48aff8ba0e61f&results_per_page=50&what_phrase=data&what_or=data%20scientce%20statistician",sep = "")
+  test <- fromJSON(url)
+  us[[i]] <- test$results %>% # obtain data
+    select("id","title","description","latitude","longitude","created","salary_is_predicted") %>%    mutate("company_name"=test$results$company$display_name) %>%  # choose some columns
+    mutate("category_label"=test$results$category$label) %>% 
+mutate("location"=test$results$location$display_name)
+}
+US <- do.call(rbind, us) # use rbind() to join 10 small datasets
+US <- as.data.frame(US)
+# save(US,file = "US.RData")
+# write.table(US,"D:/MSSP/Rdata/615/615 final/US.csv",col.names = TRUE,row.name = FALSE,sep = ",")
+
+```
+
+# Data cleaning
+```{r}
+# Check na
+length(which(!is.na(US)=="FALSE")) 
+DS <- US
+DS <- na.omit(DS)
+length(which(!is.na(DS)=="FALSE")) 
+
+# remove unneeded columns
+unique(DS$salary_is_predicted)
+DS <- dplyr::select(DS,-"salary_is_predicted")
+
+# Separate "created" into "date" and "time"
+DS1 <- DS
+DS1 %<>% separate(col = created, into = c("date","time"), sep = "T", remove = TRUE)
+DS1 %<>% separate(col = time, into = c("time","z"), sep = "Z", remove = TRUE)
+DS1 <- select(DS1,-"z")
+
+# Separate "location" into "city" and "county_state"
+DS2 <- DS1
+DS2 %<>% separate(col = location, into = c("city","county_state"), sep = ",", remove = TRUE)
+
+# title
+DS3 <- DS2
+DS3$title <- gsub('</strong>','',DS3$title)
+DS3$title <- gsub('<strong>','',DS3$title)
+
+# description
+DS4 <- DS3
+DS4$description <- gsub('</strong>','',DS4$description)
+DS4$description <- gsub('<strong>','',DS4$description)
+
+# write.table(DS4,"D:/MSSP/Rdata/615/615 final/shiny/DS4.csv",col.names = TRUE,row.name = FALSE,sep = ",")
+# save(DS4,file = "DS4.RData")
+
+```
+
+# EDA
+```{r}
+### This chuck is to get word frequency in title and description
+
+# define a function to show top frequency
+top.freq <- function(x,topn=0){
+  require(plyr)
+  top.df <- count(x) 
+  top.df <- top.df[order(top.df$freq,decreasing = TRUE),]
+  if(topn > 0) return(top.df[1:topn,])
+  else  return(top.df)
+}
+
+## description data
+
+# extract data from DS4
+description <- DS4$description
+# use jieba
+engine <- worker(user = "user.dict.utf8",encoding = 'UTF-8')
+# get rid of irrelevant words
+word.lis.des <- lapply(description, function(x){
+  v <- gsub('[\u4e00-\u9fa5|0-9|\\.|...]','',segment(x,engine))
+  v <- v[v!='']
+  return(v)
+})
+# to capital
+segWord.des <- toupper(unlist(word.lis.des))
+# load stopwords
+stopWords <- toupper(readLines("stop_words.utf8",encoding = 'UTF-8'))
+
+# get word frequency in description
+removewords <- function(targetword,stopword){
+  targetword = targetword[targetword%in%stopword == F]
+  return(targetword)
+}
+
+segword.des <- sapply(X=segWord.des, FUN = removewords,stopWords)
+
+word_freq.des <- top.freq(unlist(segword.des),500)
+# write.table(word_freq.des,"D:/MSSP/Rdata/615/615 final/shiny/word_freq.des.csv",col.names = TRUE,row.name = FALSE,sep = ",")
+word_freq.des
+
+## title data
+
+# extract data from DS4
+title <- DS4$title
+# get rid of irrelevant words
+word.lis.tit <- lapply(title, function(x){
+  v <- gsub('[\u4e00-\u9fa5|0-9|\\.|...]','',segment(x,engine))
+  v <- v[v!='']
+  return(v)
+})
+# to capital
+segWord.tit <- toupper(unlist(word.lis.tit))
+
+# get word frequency in description
+segword.tit <- sapply(X=segWord.tit, FUN = removewords,stopWords)
+
+word_freq.tit <- top.freq(unlist(segword.tit),149)
+# write.table(word_freq.tit,"D:/MSSP/Rdata/615/615 final/shiny/word_freq.tit.csv",col.names = TRUE,row.name = FALSE,sep = ",")
+word_freq.tit
+```
+  In word frequency table of title, top 5 words are "data", "engineer", "senior", "scientist" and "analyst".  
+  In word frequency table of description, top 5 words are "data", "team", "engineer", "building" and "real".
+
+```{r wordcloud,warnings=FALSE}
+# word cloud of title
+
+title.cloud1 <- wordcloud(word=DS4$title,scale=c(5,0.5),
+          colors=c('red','blue','green','yellow','purple'),random.color=F,random.order=T)
+
+title.cloud2 <- wordcloud2(data=word_freq.tit,shape = "circle",size = 1)
+title.cloud2
+# htmlwidgets::saveWidget(title.cloud2, file ="title.cloud2.html",selfcontained = FALSE)
+# word cloud of description
+
+description.cloud1 <- wordcloud(word=DS4$description,min.freq=20,
+          colors=c('red','blue','green','yellow','purple'), random.color=F)
+
+description.cloud2 <- wordcloud2(data=word_freq.des,shape = "diamond")
+description.cloud2
+# htmlwidgets::saveWidget(description.cloud2, file ="description.cloud2.html",selfcontained = FALSE)
+
+
+# frequency of category_label
+funModeling::freq(DS4$category_label)
+
+
+
+```
+  From the category proportion histogram, I can draw a conclusion that most of the jobs associated with data scientists are of the IT category label.
+
+
+
+## Map
+```{r}
+# map data
+tmap_mode('view')
+epsg_wgs84 <- 4326 # GPS CRS (WGS 84)
+category <- 
+  DS4 %>% 
+  st_as_sf(coords = c("longitude", "latitude")) %>%
+  st_set_crs(epsg_wgs84)
+category_plot<- category %>% select(id, title, company_name, category_label,date, geometry)
+# save(category_plot,file="shiny/category_plot.RData")
+```
+
+```{r}
+# plot
+category_map <-
+  tm_shape(category_plot) +
+  tm_dots(col = 'category_label', size = .02, alpha=.5,title='Category label') 
+category_map
+```
+  From this map, data scientists mainly work on the eastern and western seaboard of the United States. Part of them work in the Great Lakes region and Texas.
